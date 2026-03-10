@@ -28,7 +28,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await getBody(req);
       const payload = JSON.stringify({
-        model: "llama-3.1-8b-instant",
+       model: "llama-3.3-70b-versatile",
         messages: [
           { role: "system", content: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting or asking a question, respond normally in plain text." },
           { role: "user", content: body.prompt }

@@ -36,7 +36,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const payload = JSON.stringify({
-        model: "grok-3-mini",
+        model: "grok-4-latest",
         messages: [
           {
             role: "system",
@@ -46,7 +46,9 @@ const server = http.createServer(async (req, res) => {
             role: "user",
             content: body.prompt
           }
-        ]
+        ],
+        stream: false,
+        temperature: 0
       });
 
       const options = {
@@ -64,7 +66,7 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("xAI response:", raw.slice(0, 200));
+          console.log("xAI response:", raw.slice(0, 300));
           try {
             const parsed = JSON.parse(raw);
             if (parsed.error) {

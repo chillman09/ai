@@ -1,7 +1,7 @@
 const http = require("http");
 const https = require("https");
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.GEMINI_API_KEY;
+const API_KEY = process.env.GROQ_API_KEY;
 
 function getBody(req) {
   return new Promise((resolve, reject) => {
@@ -27,18 +27,21 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/generate" && req.method === "POST") {
     try {
       const body = await getBody(req);
-
       const payload = JSON.stringify({
-        system_instruction: { parts: [{ text: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting or asking a question, respond normally in plain text." }] },
-        contents: [{ parts: [{ text: body.prompt }] }]
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting or asking a question, respond normally in plain text." },
+          { role: "user", content: body.prompt }
+        ]
       });
 
       const options = {
-        hostname: "generativelanguage.googleapis.com",
-        path: "/v1beta/models/gemini-2.0-flash:generateContent?key=" + API_KEY,
+        hostname: "api.groq.com",
+        path: "/openai/v1/chat/completions",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Authorization": "Bearer " + API_KEY,
           "Content-Length": Buffer.byteLength(payload)
         }
       };
@@ -47,7 +50,7 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("Gemini response:", raw);
+          console.log("Groq response:", raw);
           try {
             const parsed = JSON.parse(raw);
             if (parsed.error) {
@@ -55,7 +58,7 @@ const server = http.createServer(async (req, res) => {
               res.end(JSON.stringify({ code: "-- API error: " + parsed.error.message }));
               return;
             }
-            const text = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content && parsed.candidates[0].content.parts && parsed.candidates[0].content.parts[0] && parsed.candidates[0].content.parts[0].text;
+            const text = parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content;
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ code: text || "-- No response" }));
           } catch(e) {

@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
       const body = await getBody(req);
 
       const payload = JSON.stringify({
-        model: "qwen/qwen3-coder-480b-a35b-instruct:free",
+        model: "deepseek/deepseek-chat-v3-0324:free",
         messages: [
           {
             role: "system",

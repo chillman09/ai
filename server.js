@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
       const body = await getBody(req);
 
       const payload = JSON.stringify({
-        model: "meta-llama/llama-4-scout:free",
+        model: "openrouter/auto",
         messages: [
           {
             role: "system",

@@ -35,7 +35,7 @@ const server = http.createServer(async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks, no explanations. Just raw Luau code that works in Roblox."
+           content: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting, asking a question, or not requesting code, respond normally in plain text like a helpful assistant would."
           },
           {
             role: "user",

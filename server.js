@@ -7,7 +7,9 @@ function getBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (c) => body += c);
-    req.on("end", () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    req.on("end", () => {
+      try { resolve(JSON.parse(body)); } catch(e) { reject(e); }
+    });
   });
 }
 
@@ -27,11 +29,18 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/generate" && req.method === "POST") {
     try {
       const body = await getBody(req);
+
       const payload = JSON.stringify({
-        model: "meta-llama/llama-3.1-8b-instruct:free",
+        model: "meta-llama/llama-4-scout:free",
         messages: [
-          { role: "system", content: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks, no explanations. Just raw Luau code." },
-          { role: "user", content: body.prompt }
+          {
+            role: "system",
+            content: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks, no explanations. Just raw Luau code that works in Roblox."
+          },
+          {
+            role: "user",
+            content: body.prompt
+          }
         ]
       });
 
@@ -42,6 +51,8 @@ const server = http.createServer(async (req, res) => {
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer " + API_KEY,
+          "HTTP-Referer": "https://roblox-ai-plugin.com",
+          "X-Title": "Roblox AI Plugin",
           "Content-Length": Buffer.byteLength(payload)
         }
       };
@@ -53,21 +64,35 @@ const server = http.createServer(async (req, res) => {
           console.log("OpenRouter response:", raw);
           try {
             const parsed = JSON.parse(raw);
-            const code = parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content || "-- error: " + raw;
+            if (parsed.error) {
+              console.error("API error:", parsed.error.message);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ code: "-- API error: " + parsed.error.message }));
+              return;
+            }
+            const code = parsed.choices
+              && parsed.choices[0]
+              && parsed.choices[0].message
+              && parsed.choices[0].message.content;
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ code: code }));
+            res.end(JSON.stringify({ code: code || "-- No response from AI" }));
           } catch(e) {
             res.writeHead(500);
             res.end(JSON.stringify({ code: "-- parse error: " + raw }));
           }
         });
       });
-      apiReq.on("error", (e) => { res.writeHead(500); res.end(JSON.stringify({ code: "-- error: " + e.message })); });
+
+      apiReq.on("error", (e) => {
+        res.writeHead(500);
+        res.end(JSON.stringify({ code: "-- connection error: " + e.message }));
+      });
       apiReq.write(payload);
       apiReq.end();
+
     } catch(e) {
       res.writeHead(500);
-      res.end(JSON.stringify({ code: "-- error: " + e.message }));
+      res.end(JSON.stringify({ code: "-- server error: " + e.message }));
     }
     return;
   }
@@ -75,4 +100,4 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404); res.end("not found");
 });
 
-server.listen(PORT, () => console.log("running on " + PORT));
+server.listen(PORT, () => console.log("Backend running on port " + PORT));

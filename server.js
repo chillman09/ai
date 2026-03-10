@@ -1,7 +1,7 @@
 const http = require("http");
 const https = require("https");
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+const API_KEY = process.env.OPENROUTER_API_KEY;
 
 function getBody(req) {
   return new Promise((resolve, reject) => {
@@ -28,20 +28,20 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await getBody(req);
       const payload = JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
-        system: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks.",
-        messages: [{ role: "user", content: body.prompt }]
+        model: "meta-llama/llama-3.1-8b-instruct:free",
+        messages: [
+          { role: "system", content: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks, no explanations. Just raw Luau code." },
+          { role: "user", content: body.prompt }
+        ]
       });
 
       const options = {
-        hostname: "api.anthropic.com",
-        path: "/v1/messages",
+        hostname: "openrouter.ai",
+        path: "/api/v1/chat/completions",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": API_KEY,
-          "anthropic-version": "2023-06-01",
+          "Authorization": "Bearer " + API_KEY,
           "Content-Length": Buffer.byteLength(payload)
         }
       };
@@ -50,10 +50,10 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("Anthropic response:", raw);
+          console.log("OpenRouter response:", raw);
           try {
             const parsed = JSON.parse(raw);
-            const code = parsed.content && parsed.content[0] && parsed.content[0].text || "-- error: " + raw;
+            const code = parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content || "-- error: " + raw;
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ code: code }));
           } catch(e) {
@@ -62,12 +62,12 @@ const server = http.createServer(async (req, res) => {
           }
         });
       });
-      apiReq.on("error", (e) => { res.writeHead(500); res.end(JSON.stringify({ code: "-- request error: " + e.message })); });
+      apiReq.on("error", (e) => { res.writeHead(500); res.end(JSON.stringify({ code: "-- error: " + e.message })); });
       apiReq.write(payload);
       apiReq.end();
     } catch(e) {
       res.writeHead(500);
-      res.end(JSON.stringify({ code: "-- server error: " + e.message }));
+      res.end(JSON.stringify({ code: "-- error: " + e.message }));
     }
     return;
   }

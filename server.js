@@ -1,62 +1,13 @@
 const http = require("http");
 const https = require("https");
-
 const PORT = process.env.PORT || 3000;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function getBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try { resolve(JSON.parse(body)); }
-      catch (e) { reject(e); }
-    });
-  });
-}
-
-function callAnthropic(prompt) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: "You are a Roblox Luau coding assistant. Always respond with ONLY valid Luau code. No markdown, no backticks, no explanations.",
-      messages: [{ role: "user", content: prompt }]
-    });
-
-    const options = {
-      hostname: "api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Length": Buffer.byteLength(payload)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        console.log("Anthropic raw response:", data);
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) {
-            reject(new Error(parsed.error.message));
-            return;
-          }
-          const text = parsed.content && parsed.content[0] && parsed.content[0].text;
-          if (text) resolve(text);
-          else reject(new Error("No content in response: " + data));
-        } catch (e) { reject(e); }
-      });
-    });
-
-    req.on("error", reject);
-    req.write(payload);
-    req.end();
+    req.on("data", (c) => body += c);
+    req.on("end", () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
   });
 }
 
@@ -67,45 +18,61 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
-  if (req.method === "GET" && req.url === "/") {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("AI Plugin Backend running! Key set: " + (ANTHROPIC_API_KEY ? "YES" : "NO - MISSING KEY"));
+  if (req.url === "/" && req.method === "GET") {
+    res.writeHead(200);
+    res.end("running - key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
     return;
   }
 
-  if (req.method === "GET" && req.url === "/debug") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", keySet: !!ANTHROPIC_API_KEY, keyPrefix: ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.substring(0, 15) + "..." : "MISSING" }));
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/generate") {
+  if (req.url === "/generate" && req.method === "POST") {
     try {
       const body = await getBody(req);
-      if (!body.prompt) { res.writeHead(400); res.end(JSON.stringify({ error: "Missing prompt" })); return; }
-      console.log("Prompt:", body.prompt.substring(0, 100));
-      const code = await callAnthropic(body.prompt);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code }));
-    } catch (err) {
-      console.error("Error:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
+      const payload = JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        system: "You are a Roblox Luau coding assistant. Respond with ONLY valid Luau code. No markdown, no backticks.",
+        messages: [{ role: "user", content: body.prompt }]
+      });
+
+      const options = {
+        hostname: "api.anthropic.com",
+        path: "/v1/messages",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": API_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Length": Buffer.byteLength(payload)
+        }
+      };
+
+      let raw = "";
+      const apiReq = https.request(options, (apiRes) => {
+        apiRes.on("data", (c) => raw += c);
+        apiRes.on("end", () => {
+          console.log("Anthropic response:", raw);
+          try {
+            const parsed = JSON.parse(raw);
+            const code = parsed.content && parsed.content[0] && parsed.content[0].text || "-- error: " + raw;
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ code: code }));
+          } catch(e) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ code: "-- parse error: " + raw }));
+          }
+        });
+      });
+      apiReq.on("error", (e) => { res.writeHead(500); res.end(JSON.stringify({ code: "-- request error: " + e.message })); });
+      apiReq.write(payload);
+      apiReq.end();
+    } catch(e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ code: "-- server error: " + e.message }));
     }
     return;
   }
 
-  res.writeHead(404); res.end("Not found");
+  res.writeHead(404); res.end("not found");
 });
 
-server.listen(PORT, () => console.log("Backend running on port " + PORT));
-```
-
-6. Click **Commit changes**
-7. Railway will auto-redeploy in ~1 minute
-
----
-
-Then run the debug test again in Studio's Command Bar:
-```
-local s=game.ServerStorage.DebugTest.Source loadstring(s)()
+server.listen(PORT, () => console.log("running on " + PORT));

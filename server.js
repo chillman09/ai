@@ -1,15 +1,13 @@
 const http = require("http");
 const https = require("https");
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.OPENROUTER_API_KEY;
+const API_KEY = process.env.GEMINI_API_KEY;
 
 function getBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (c) => body += c);
-    req.on("end", () => {
-      try { resolve(JSON.parse(body)); } catch(e) { reject(e); }
-    });
+    req.on("end", () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
   });
 }
 
@@ -31,28 +29,16 @@ const server = http.createServer(async (req, res) => {
       const body = await getBody(req);
 
       const payload = JSON.stringify({
-       model: "deepseek/deepseek-v3:free",
-        messages: [
-          {
-            role: "system",
-           content: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting, asking a question, or not requesting code, respond normally in plain text like a helpful assistant would."
-          },
-          {
-            role: "user",
-            content: body.prompt
-          }
-        ]
+        system_instruction: { parts: [{ text: "You are a friendly Roblox Studio AI assistant. If the user asks you to create, make, write, or code something, respond with ONLY raw Luau code, no markdown, no backticks. If the user is just chatting or asking a question, respond normally in plain text." }] },
+        contents: [{ parts: [{ text: body.prompt }] }]
       });
 
       const options = {
-        hostname: "openrouter.ai",
-        path: "/api/v1/chat/completions",
+        hostname: "generativelanguage.googleapis.com",
+        path: "/v1beta/models/gemini-2.0-flash:generateContent?key=" + API_KEY,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + API_KEY,
-          "HTTP-Referer": "https://roblox-ai-plugin.com",
-          "X-Title": "Roblox AI Plugin",
           "Content-Length": Buffer.byteLength(payload)
         }
       };
@@ -61,21 +47,17 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("OpenRouter response:", raw);
+          console.log("Gemini response:", raw);
           try {
             const parsed = JSON.parse(raw);
             if (parsed.error) {
-              console.error("API error:", parsed.error.message);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ code: "-- API error: " + parsed.error.message }));
               return;
             }
-            const code = parsed.choices
-              && parsed.choices[0]
-              && parsed.choices[0].message
-              && parsed.choices[0].message.content;
+            const text = parsed.candidates && parsed.candidates[0] && parsed.candidates[0].content && parsed.candidates[0].content.parts && parsed.candidates[0].content.parts[0] && parsed.candidates[0].content.parts[0].text;
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ code: code || "-- No response from AI" }));
+            res.end(JSON.stringify({ code: text || "-- No response" }));
           } catch(e) {
             res.writeHead(500);
             res.end(JSON.stringify({ code: "-- parse error: " + raw }));
@@ -85,14 +67,14 @@ const server = http.createServer(async (req, res) => {
 
       apiReq.on("error", (e) => {
         res.writeHead(500);
-        res.end(JSON.stringify({ code: "-- connection error: " + e.message }));
+        res.end(JSON.stringify({ code: "-- error: " + e.message }));
       });
       apiReq.write(payload);
       apiReq.end();
 
     } catch(e) {
       res.writeHead(500);
-      res.end(JSON.stringify({ code: "-- server error: " + e.message }));
+      res.end(JSON.stringify({ code: "-- error: " + e.message }));
     }
     return;
   }
@@ -100,4 +82,4 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404); res.end("not found");
 });
 
-server.listen(PORT, () => console.log("Backend running on port " + PORT));
+server.listen(PORT, () => console.log("running on port " + PORT));

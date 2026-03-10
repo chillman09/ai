@@ -1,0 +1,12 @@
+{
+  "name": "ai-assistant-plugin-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Roblox Studio AI Assistant Plugin",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

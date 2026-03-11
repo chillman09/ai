@@ -21,7 +21,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   if (req.url === "/" && req.method === "GET") {
-    res.writeHead(200);
+    res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("AI Plugin running - Ollama key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
     return;
   }
@@ -46,11 +46,12 @@ const server = http.createServer(async (req, res) => {
             role: "user",
             content: body.prompt
           }
-        ]
+        ],
+        stream: false
       });
 
       const options = {
-        hostname: "api.ollama.com",
+        hostname: "ollama.com",
         path: "/v1/chat/completions",
         method: "POST",
         headers: {
@@ -64,6 +65,7 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
+          console.log("Ollama status:", apiRes.statusCode);
           console.log("Ollama response:", raw.slice(0, 300));
           try {
             const parsed = JSON.parse(raw);
@@ -80,13 +82,15 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ code: text || "-- No response from AI" }));
           } catch(e) {
+            console.error("Parse error:", e.message, "Raw:", raw.slice(0, 200));
             res.writeHead(500);
-            res.end(JSON.stringify({ code: "-- parse error: " + raw }));
+            res.end(JSON.stringify({ code: "-- parse error: " + raw.slice(0, 100) }));
           }
         });
       });
 
       apiReq.on("error", (e) => {
+        console.error("Request error:", e.message);
         res.writeHead(500);
         res.end(JSON.stringify({ code: "-- connection error: " + e.message }));
       });

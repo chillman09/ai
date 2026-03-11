@@ -22,31 +22,31 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url === "/" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("AI Plugin running - Ollama key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
+    res.end("AI Plugin running - key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
     return;
   }
 
   if (req.url === "/generate" && req.method === "POST") {
     try {
       const body = await getBody(req);
-      if (!body.prompt) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ code: "-- error: missing prompt" }));
-        return;
+
+      // Support both old single-prompt format and new messages format
+      let messages = body.messages;
+      if (!messages) {
+        if (!body.prompt) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ code: "-- error: missing prompt or messages" }));
+          return;
+        }
+        messages = [
+          { role: "system", content: body.system || "You are a helpful Roblox Luau assistant." },
+          { role: "user", content: body.prompt }
+        ];
       }
 
       const payload = JSON.stringify({
         model: "glm-5:cloud",
-        messages: [
-          {
-            role: "system",
-            content: "You are a Roblox Luau coding expert built into Roblox Studio. When asked to write or edit code, respond with ONLY raw working Luau code — no markdown, no backticks, no explanations. When the user is just chatting (not asking for code), reply in plain conversational text, 1-2 sentences max."
-          },
-          {
-            role: "user",
-            content: body.prompt
-          }
-        ],
+        messages: messages,
         stream: false
       });
 
@@ -65,12 +65,11 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("Ollama status:", apiRes.statusCode);
-          console.log("Ollama response:", raw.slice(0, 300));
+          console.log("Status:", apiRes.statusCode);
+          console.log("Response:", raw.slice(0, 300));
           try {
             const parsed = JSON.parse(raw);
             if (parsed.error) {
-              console.error("Ollama error:", parsed.error);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ code: "-- API error: " + (parsed.error.message || JSON.stringify(parsed.error)) }));
               return;
@@ -82,15 +81,13 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ code: text || "-- No response from AI" }));
           } catch(e) {
-            console.error("Parse error:", e.message, "Raw:", raw.slice(0, 200));
             res.writeHead(500);
-            res.end(JSON.stringify({ code: "-- parse error: " + raw.slice(0, 100) }));
+            res.end(JSON.stringify({ code: "-- parse error: " + raw.slice(0, 150) }));
           }
         });
       });
 
       apiReq.on("error", (e) => {
-        console.error("Request error:", e.message);
         res.writeHead(500);
         res.end(JSON.stringify({ code: "-- connection error: " + e.message }));
       });

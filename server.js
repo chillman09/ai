@@ -41,12 +41,49 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 function safeJSON(raw) {
+  if (!raw) return null;
+  // 1. direct parse
+  try { return JSON.parse(raw.trim()); } catch(e) {}
+  // 2. strip markdown fences
+  try { const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) return JSON.parse(m[1].trim()); } catch(e) {}
+  // 3. find first { to last }
   try {
-    const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const s = m ? m[1] : raw;
-    const o = s.match(/\{[\s\S]*\}/);
-    return JSON.parse(o ? o[0] : s);
-  } catch(e) { return null; }
+    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+    if (s !== -1 && e > s) return JSON.parse(raw.slice(s, e+1));
+  } catch(e) {}
+  // 4. fix trailing commas then retry
+  try {
+    let fixed = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}")+1);
+    fixed = fixed.replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(fixed);
+  } catch(e) {}
+  return null;
+}
+
+async function callWithRetry(model, messages) {
+  const raw = await model.call(messages);
+  let parsed = safeJSON(raw);
+  if (!parsed) parsed = { reply: raw, actions: [] };
+  if (!parsed.actions) parsed.actions = [];
+
+  // If reply mentions doing something but actions is empty — retry
+  const replyLower = (parsed.reply || "").toLowerCase();
+  const mentionsAction = replyLower.includes("fix") || replyLower.includes("delet") || replyLower.includes("edit") || replyLower.includes("creat") || replyLower.includes("remov");
+  if (parsed.actions.length === 0 && mentionsAction) {
+    console.log("[retry] actions empty but reply mentions changes — retrying...");
+    const retryMsgs = [
+      ...messages,
+      { role: "assistant", content: raw },
+      { role: "user", content: "You said you would make changes but your actions array was empty. Return the JSON again but this time POPULATE the actions array with all the actual changes. Every change MUST be in the actions array." }
+    ];
+    const raw2 = await model.call(retryMsgs);
+    const p2 = safeJSON(raw2);
+    if (p2 && p2.actions && p2.actions.length > 0) {
+      console.log("[retry] success — got " + p2.actions.length + " actions");
+      return p2;
+    }
+  }
+  return parsed;
 }
 function getTokenFromReq(body, req) {
   return body?.sessionToken ||
@@ -120,30 +157,31 @@ const MODELS = {
 
 // ── SYSTEM PROMPTS ────────────────────────────────────────────────────────────
 const ACTION_SYSTEM = `You are Spark, an AI assistant that controls Roblox Studio directly.
-You have full knowledge of the user's game — its scripts, workspace, and structure — provided below.
+You have full knowledge of the user's game provided in this prompt.
 
-Respond ONLY with a JSON object:
-{
-  "reply": "Short friendly message explaining what you did or found",
-  "actions": []
-}
+YOUR RESPONSE MUST BE A SINGLE RAW JSON OBJECT. NO EXCEPTIONS.
+DO NOT write any text before or after the JSON.
+DO NOT use markdown code blocks. DO NOT say "Here is..." or "I will...".
+START your response with { and END with }. Nothing else.
 
-Available actions:
-{"type":"create_script","scriptType":"Script|LocalScript|ModuleScript","name":"ProperName","parent":"game.ServerScriptService","source":"-- full luau code"}
-{"type":"edit_script","path":"game.ServerScriptService.ScriptName","source":"-- complete new source"}
-{"type":"create_instance","className":"Part","name":"MyPart","parent":"game.Workspace","properties":{"Size":[4,1,4],"Anchored":true,"BrickColor":"Bright red"}}
-{"type":"delete_instance","path":"game.Workspace.PartName"}
-{"type":"set_property","path":"game.Workspace.Part","property":"BrickColor","value":"Bright blue"}
+Required format:
+{"reply":"what you did in 1-2 sentences","actions":[]}
 
-STRICT RULES:
-- ONLY respond with valid JSON. Nothing outside the JSON object ever.
-- When fixing bugs, read the FULL script source provided and rewrite it completely fixed.
-- Script names must be descriptive. Never name a script after the prompt.
-- Write complete, working, production-quality Luau. No truncation, no placeholders.
-- No markdown inside source fields — raw Luau only.
-- Use proper Roblox services and patterns.
-- If nothing needs doing in Studio, return actions: [].
-- Always explain what you found/fixed in the reply field.`;
+Action types you can use:
+{"type":"create_script","scriptType":"Script","name":"ScriptName","parent":"game.ServerScriptService","source":"-- luau code here"}
+{"type":"edit_script","path":"game.ServerScriptService.ExistingScriptName","source":"-- complete rewritten source"}
+{"type":"create_instance","className":"Part","name":"PartName","parent":"game.Workspace","properties":{"Size":[4,1,4],"Anchored":true}}
+{"type":"delete_instance","path":"game.ServerScriptService.ScriptName"}
+{"type":"set_property","path":"game.Workspace.Part","property":"BrickColor","value":"Bright red"}
+
+RULES YOU MUST FOLLOW:
+1. Your ENTIRE response is one JSON object starting with { — no other text
+2. To fix a bug: use edit_script with the COMPLETE rewritten script source — no placeholders, no "-- rest of code here"
+3. To delete something: use delete_instance with the exact full path
+4. Script source must be complete working Luau — never truncated
+5. Use exact paths from the game context provided
+6. Put ALL fixes/changes in the actions array — if you say you did something, it MUST be in actions
+7. Never describe what you will do — just DO it in the actions array`;
 
 const SCAN_SYSTEM = `You are an expert Roblox game analyst with access to the full game source.
 Analyze everything provided and respond in this exact format:
@@ -313,14 +351,12 @@ const server = http.createServer(async (req, res) => {
 
       console.log(`[generate] model=${modelId} plan=${userPlan} context=${gameContexts[sessionToken] ? gameContexts[sessionToken].context.length + ' chars' : 'none'}`);
 
-      const raw = await model.call(messages);
-      let parsed = safeJSON(raw);
-      if (!parsed) parsed = { reply: raw, actions: [] };
-      if (!parsed.actions) parsed.actions = [];
+      const parsed = await callWithRetry(model, messages);
 
       // Queue actions for studio
       if (sessionToken && parsed.actions.length > 0) {
         actionQueues[sessionToken] = { actions: parsed.actions, queuedAt: Date.now() };
+        console.log('[generate] queued ' + parsed.actions.length + ' actions');
       }
 
       send(res, 200, parsed);

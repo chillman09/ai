@@ -1,7 +1,7 @@
 const http = require("http");
 const https = require("https");
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.XAI_API_KEY;
+const API_KEY = process.env.OLLAMA_API_KEY;
 
 function getBody(req) {
   return new Promise((resolve, reject) => {
@@ -22,7 +22,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url === "/" && req.method === "GET") {
     res.writeHead(200);
-    res.end("AI Plugin running - xAI key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
+    res.end("AI Plugin running - Ollama key: " + (API_KEY ? API_KEY.slice(0,10)+"..." : "MISSING"));
     return;
   }
 
@@ -36,7 +36,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const payload = JSON.stringify({
-        model: "grok-4-latest",
+        model: "glm-5:cloud",
         messages: [
           {
             role: "system",
@@ -46,13 +46,11 @@ const server = http.createServer(async (req, res) => {
             role: "user",
             content: body.prompt
           }
-        ],
-        stream: false,
-        temperature: 0
+        ]
       });
 
       const options = {
-        hostname: "api.x.ai",
+        hostname: "api.ollama.com",
         path: "/v1/chat/completions",
         method: "POST",
         headers: {
@@ -66,13 +64,13 @@ const server = http.createServer(async (req, res) => {
       const apiReq = https.request(options, (apiRes) => {
         apiRes.on("data", (c) => raw += c);
         apiRes.on("end", () => {
-          console.log("xAI response:", raw.slice(0, 300));
+          console.log("Ollama response:", raw.slice(0, 300));
           try {
             const parsed = JSON.parse(raw);
             if (parsed.error) {
-              console.error("xAI error:", parsed.error.message);
+              console.error("Ollama error:", parsed.error);
               res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ code: "-- API error: " + parsed.error.message }));
+              res.end(JSON.stringify({ code: "-- API error: " + (parsed.error.message || JSON.stringify(parsed.error)) }));
               return;
             }
             const text = parsed.choices

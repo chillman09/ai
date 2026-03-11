@@ -6,7 +6,7 @@ const API_KEY = process.env.OLLAMA_API_KEY;
 function getBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (c) => body += c);
+    req.on("data", c => body += c);
     req.on("end", () => {
       try { resolve(JSON.parse(body)); } catch(e) { reject(e); }
     });
@@ -15,11 +15,7 @@ function getBody(req) {
 
 function callOllama(messages) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      model: "glm-5:cloud",
-      messages,
-      stream: false
-    });
+    const payload = JSON.stringify({ model: "glm-5:cloud", messages, stream: false });
     const options = {
       hostname: "ollama.com",
       path: "/v1/chat/completions",
@@ -31,15 +27,15 @@ function callOllama(messages) {
       }
     };
     let raw = "";
-    const req = https.request(options, (res) => {
+    const req = https.request(options, res => {
       res.on("data", c => raw += c);
       res.on("end", () => {
         try {
           const parsed = JSON.parse(raw);
           const text = parsed.choices?.[0]?.message?.content;
           if (text) resolve(text);
-          else reject(new Error(parsed.error?.message || "No content: " + raw.slice(0,200)));
-        } catch(e) { reject(new Error("Parse error: " + raw.slice(0,200))); }
+          else reject(new Error(parsed.error?.message || "No content"));
+        } catch(e) { reject(new Error("Parse error: " + raw.slice(0, 200))); }
       });
     });
     req.on("error", reject);
@@ -48,52 +44,42 @@ function callOllama(messages) {
   });
 }
 
-const SYSTEM_PROMPT = `You are an AI assistant embedded in Roblox Studio. You control the game directly.
-
-You respond with a JSON object in this EXACT format:
-{
-  "reply": "A short friendly message to show the user",
-  "actions": [
-    // list of actions to perform, or empty array [] if just chatting
-  ]
+function safeJSON(raw) {
+  try {
+    const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    const s = m ? m[1] : raw;
+    const o = s.match(/\{[\s\S]*\}/);
+    return JSON.parse(o ? o[0] : s);
+  } catch(e) { return null; }
 }
 
-Available actions:
+// ─── SYSTEM PROMPT for /generate and /step ───────────────────────────────────
+const ACTION_SYSTEM = `You are an AI assistant inside Roblox Studio. You control the game directly.
 
-1. Create a script:
-{"type":"create_script","scriptType":"Script|LocalScript|ModuleScript","name":"ScriptName","parent":"game.ServerScriptService","source":"-- lua code here"}
+Respond ONLY with a JSON object:
+{
+  "reply": "Short friendly message to the user",
+  "actions": [ ...array of actions or empty [] ]
+}
 
-2. Edit an existing script:
-{"type":"edit_script","path":"game.ServerScriptService.ScriptName","source":"-- new full source"}
-
-3. Create an instance (part, folder, gui, etc):
-{"type":"create_instance","className":"Part","name":"MyPart","parent":"game.Workspace","properties":{"Size":[4,1,4],"BrickColor":"Bright red","Anchored":true}}
-
-4. Delete an instance:
+Actions:
+{"type":"create_script","scriptType":"Script|LocalScript|ModuleScript","name":"ProperName","parent":"game.ServerScriptService","source":"-- code"}
+{"type":"edit_script","path":"game.ServerScriptService.ScriptName","source":"-- full new source"}
+{"type":"create_instance","className":"Part","name":"MyPart","parent":"game.Workspace","properties":{"Size":[4,1,4],"Anchored":true,"BrickColor":"Bright red"}}
 {"type":"delete_instance","path":"game.Workspace.PartName"}
-
-5. Set a property:
-{"type":"set_property","path":"game.Workspace.PartName","property":"BrickColor","value":"Bright blue"}
-
-6. Reply only (no actions):
-{"type":"chat"}
+{"type":"set_property","path":"game.Workspace.Part","property":"BrickColor","value":"Bright blue"}
 
 RULES:
-- ALWAYS respond with valid JSON. Nothing outside the JSON object.
-- For scripts, write complete working Luau code. No markdown in the source field.
-- Script names should be descriptive (CoinSystem, LeaderboardManager) NOT named after the user's prompt.
-- When asked to build a game feature, create ALL necessary scripts and instances.
-- When editing, rewrite the full script with changes applied.
-- Use proper Roblox services: Players, RunService, TweenService, DataStoreService etc.
-- Write clean, commented, production-quality code.
-- If a task is big, break it into multiple actions in one response.
-- For "chat" or questions, just set actions to [] and answer in reply.`;
+- ALWAYS respond with valid JSON only. Nothing outside the JSON.
+- Script names must be descriptive (CoinSystem, LeaderboardManager). NEVER name them after the user's prompt.
+- Write complete, working, production-quality Luau code. No markdown inside source fields.
+- Use proper Roblox services. Handle edge cases.
+- If nothing needs to be done, return actions: [].`;
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   if (req.url === "/" && req.method === "GET") {
@@ -102,90 +88,104 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /generate  – normal chat + code ──────────────────────────────────────
   if (req.url === "/generate" && req.method === "POST") {
     try {
       const body = await getBody(req);
-      if (!body.messages && !body.prompt) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "missing messages or prompt" }));
-        return;
-      }
-
-      // Build messages array
-      let messages;
-      if (body.messages) {
-        // Ensure system prompt is first
-        messages = [{ role: "system", content: SYSTEM_PROMPT }, ...body.messages.filter(m => m.role !== "system")];
-      } else {
-        messages = [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: body.prompt }
-        ];
-      }
+      const msgs = body.messages || [{ role:"user", content: body.prompt || "" }];
+      const clean = msgs.filter(m => m.role !== "system");
+      const messages = [{ role:"system", content: ACTION_SYSTEM }, ...clean];
 
       console.log("Calling AI with", messages.length, "messages");
+      let raw = await callOllama(messages);
+      console.log("Raw:", raw.slice(0, 200));
 
-      let rawResponse = await callOllama(messages);
-      console.log("Raw response:", rawResponse.slice(0, 300));
-
-      // Try to extract JSON if model wraps it in markdown
-      let jsonStr = rawResponse;
-      const jsonMatch = rawResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) jsonStr = jsonMatch[1];
-      // Try to find { ... } if still not clean
-      const objMatch = jsonStr.match(/\{[\s\S]*\}/);
-      if (objMatch) jsonStr = objMatch[0];
-
-      let parsed;
-      try {
-        parsed = JSON.parse(jsonStr);
-      } catch(e) {
-        // AI didn't return valid JSON - wrap it as a chat reply
-        console.error("JSON parse failed, wrapping as chat:", e.message);
-        parsed = { reply: rawResponse, actions: [] };
-      }
+      let parsed = safeJSON(raw);
+      if (!parsed) parsed = { reply: raw, actions: [] };
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(parsed));
-
     } catch(e) {
-      console.error("Server error:", e.message);
       res.writeHead(500);
-      res.end(JSON.stringify({ reply: "Server error: " + e.message, actions: [] }));
+      res.end(JSON.stringify({ reply: "Error: " + e.message, actions: [] }));
     }
     return;
   }
 
-  // Plan endpoint - breaks a game idea into steps
+  // ── /scan  – deep game analysis ──────────────────────────────────────────
+  if (req.url === "/scan" && req.method === "POST") {
+    try {
+      const body = await getBody(req);
+      const context = body.context || "";
+
+      const messages = [
+        {
+          role: "system",
+          content: `You are an expert Roblox game analyst. The user has given you the full source code and structure of their Roblox game. 
+Analyze it thoroughly and respond in this exact format:
+
+## 🗺️ Game Overview
+[What type of game this is, what systems are in it, 2-3 sentences]
+
+## 📁 Structure
+[List every script and key instance with one-line description of what it does]
+
+## 🐛 Bugs Found
+[Number each bug. Explain what it is, why it breaks things, and exactly how to fix it. If no bugs, say "No bugs found!"]
+
+## ⚠️ Missing Systems
+[What important systems are missing that this type of game usually needs]
+
+## 💡 Suggestions
+[2-3 concrete improvements you'd recommend]
+
+Be specific. Reference actual script names, line numbers if relevant, and instance paths.`
+        },
+        {
+          role: "user",
+          content: "Here is my full Roblox game:\n\n" + context
+        }
+      ];
+
+      console.log("Scanning game...");
+      const analysis = await callOllama(messages);
+      console.log("Scan done:", analysis.slice(0, 100));
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ analysis }));
+    } catch(e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ analysis: "Error during scan: " + e.message }));
+    }
+    return;
+  }
+
+  // ── /plan  – break game idea into steps ──────────────────────────────────
   if (req.url === "/plan" && req.method === "POST") {
     try {
       const body = await getBody(req);
       const messages = [
         {
           role: "system",
-          content: `You are a Roblox game architect. Given a game idea, respond with a JSON object:
+          content: `You are a Roblox game architect. Given a game idea, respond ONLY with JSON:
 {
   "title": "Game Name",
-  "description": "One sentence description",
+  "description": "One sentence",
   "steps": [
-    {"id": 1, "title": "Step title", "description": "What to build", "type": "script|world|both"},
+    {"id":1,"title":"Step title","description":"What to build exactly","type":"script|world|both"},
     ...
   ]
 }
-Make 5-8 specific, implementable steps. Each step = one feature/system. No markdown outside JSON.`
+5-8 specific implementable steps. Each step = one feature. No markdown outside JSON.`
         },
-        { role: "user", content: "Game idea: " + body.idea + "\n\nExisting game:\n" + (body.context || "Empty game") }
+        {
+          role: "user",
+          content: "Game idea: " + body.idea + "\n\nCurrent game:\n" + (body.context || "Empty game")
+        }
       ];
-
       let raw = await callOllama(messages);
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      let plan;
-      try {
-        plan = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-      } catch(e) {
-        plan = { title: "Game Plan", description: body.idea, steps: [] };
-      }
-
+      let plan = safeJSON(raw);
+      if (!plan) plan = { title: body.idea, description: "", steps: [] };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(plan));
     } catch(e) {
@@ -195,40 +195,33 @@ Make 5-8 specific, implementable steps. Each step = one feature/system. No markd
     return;
   }
 
-  // Execute a single plan step
+  // ── /step  – execute one plan step ───────────────────────────────────────
   if (req.url === "/step" && req.method === "POST") {
     try {
       const body = await getBody(req);
       const messages = [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: ACTION_SYSTEM },
         {
           role: "user",
-          content: `You are implementing step ${body.stepId} of a Roblox game.
+          content: `Implement step ${body.stepId} of this Roblox game plan.
 
 Full plan:
-${body.steps.map((s,i) => `${i+1}. ${s.title}: ${s.description}`).join("\n")}
+${body.steps.map((s,i)=>`${i+1}. ${s.title}: ${s.description}`).join("\n")}
 
 Current game state:
 ${body.context}
 
-Previously done steps:
-${body.history || "None yet"}
+Previously completed:
+${body.history || "Nothing yet"}
 
-NOW implement step ${body.stepId}: "${body.step.title}" - ${body.step.description}
+NOW implement step ${body.stepId}: "${body.step.title}" — ${body.step.description}
 
-Write complete, working code. Create all necessary scripts and instances for this step.`
+Create all necessary scripts and instances. Write complete working code.`
         }
       ];
-
       let raw = await callOllama(messages);
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      let result;
-      try {
-        result = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-      } catch(e) {
-        result = { reply: raw, actions: [] };
-      }
-
+      let result = safeJSON(raw);
+      if (!result) result = { reply: raw, actions: [] };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     } catch(e) {

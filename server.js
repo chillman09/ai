@@ -527,6 +527,282 @@ Create ALL necessary scripts and instances. Write complete working Luau code.` }
     return;
   }
 
+
+  // ════════════════════════════════════════════════
+  // AGENT — Lemonade-style multi-step agent loop
+  // POST /agent
+  // ════════════════════════════════════════════════
+  if (url === "/agent" && req.method === "POST") {
+    try {
+      const body = await getBody(req);
+      const sessionToken = body.sessionToken;
+      let userPlan = "free";
+      if (sessionToken) {
+        const session = sessions[sessionToken];
+        if (!session) return send(res, 401, { error: "Invalid session" });
+        userPlan = session.plan;
+      }
+
+      const modelId = body.model || "glm5";
+      const model = MODELS[modelId] || MODELS["glm5"];
+      if (model.tier === "paid" && userPlan !== "pro") {
+        return send(res, 403, { error: "Pro required for this model" });
+      }
+
+      const userMessage = body.message || "";
+      const ctx = gameContexts[sessionToken];
+      const gameInfo = ctx
+        ? `\n\n========== GAME STATE (${Math.round((Date.now()-ctx.updatedAt)/1000)}s ago) ==========\n${ctx.context}\n========== END ==========`
+        : "\n\n[No game context — plugin not connected]";
+
+      // ── PHASE 1: CLASSIFY — should we show options or just do it? ──
+      const classifyMessages = [
+        { role: "system", content: `You classify user requests about a Roblox game. Respond ONLY with JSON, no other text.
+
+If the request is AMBIGUOUS (multiple valid approaches, user should choose where to start):
+{"type":"options","options":["option 1 description","option 2 description","option 3 description"]}
+Max 4 options. Always make the last option exactly: "Something else — I'll describe it"
+
+If the request is CLEAR (one obvious thing to do, or user already specified exactly what):
+{"type":"direct"}
+
+Examples of AMBIGUOUS: "make a battle royale", "fix all bugs", "add multiplayer", "improve my game"
+Examples of DIRECT: "add a leaderboard", "fix the killbrick debounce bug", "create a checkpoint system", "delete the TestScript"
+` + gameInfo },
+        { role: "user", content: userMessage }
+      ];
+
+      const classifyRaw = await model.call(classifyMessages);
+      const classified = safeJSON(classifyRaw);
+
+      if (classified && classified.type === "options") {
+        // Return options for user to pick
+        return send(res, 200, {
+          phase: "options",
+          question: "Let's get started. Which part should we build first?",
+          options: classified.options
+        });
+      }
+
+      // ── PHASE 2: INVESTIGATE + PLAN ──
+      const planMessages = [
+        { role: "system", content: `You are Spark, a Roblox Studio AI agent. You have full access to the game.
+Analyze the request and create an investigation + execution plan.
+Respond ONLY with JSON:
+{
+  "summary": "One sentence: what you're going to do",
+  "investigations": [
+    {"action": "read_script", "target": "game.ServerScriptService.ScriptName", "reason": "why"},
+    {"action": "list_children", "target": "game.Workspace", "reason": "why"},
+    {"action": "find_instance", "target": "PartName", "reason": "why"}
+  ],
+  "steps": [
+    {"id": 1, "title": "Step title", "description": "Exactly what will be done"}
+  ]
+}
+investigations: what you need to check in the game first (0-4 items, only what's actually needed)
+steps: 1-5 concrete implementation steps
+` + gameInfo },
+        { role: "user", content: userMessage }
+      ];
+
+      const planRaw = await model.call(planMessages);
+      const plan = safeJSON(planRaw);
+      if (!plan) return send(res, 500, { error: "Failed to plan" });
+
+      // ── PHASE 3: EXECUTE — do the actual work ──
+      // Build investigation results from stored context
+      const investigationResults = [];
+      if (plan.investigations && ctx) {
+        for (const inv of (plan.investigations || [])) {
+          let result = "";
+          if (inv.action === "read_script") {
+            // Find script source in stored context
+            const scriptName = inv.target.split(".").pop();
+            const scriptMatch = ctx.context.match(
+              new RegExp(`--- PATH: [^\\n]*${scriptName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}[^\\n]* ---\\n([\\s\\S]*?)(?=\\n--- PATH:|\\n=== |$)`, 'i')
+            );
+            result = scriptMatch ? `Source of ${scriptName}:\n${scriptMatch[1].slice(0,3000)}` : `Script ${scriptName} not found in context`;
+          } else if (inv.action === "list_children") {
+            const svcName = inv.target.split(".").pop();
+            const svcMatch = ctx.context.match(new RegExp(`=== ${svcName} ===([\\s\\S]*?)(?=\\n===|$)`, 'i'));
+            result = svcMatch ? `Children of ${svcName}:${svcMatch[1].slice(0,1000)}` : `${svcName} not found`;
+          } else if (inv.action === "find_instance") {
+            const instName = inv.target;
+            result = ctx.context.includes(instName) ? `Found: ${instName} exists in game` : `Not found: ${instName} does not exist`;
+          }
+          investigationResults.push({ ...inv, result });
+        }
+      }
+
+      // Now do the actual implementation
+      const executeMessages = [
+        { role: "system", content: `You are Spark, a Roblox Studio AI agent. Implement the requested changes now.
+
+YOUR RESPONSE MUST BE A SINGLE RAW JSON OBJECT STARTING WITH { — NO OTHER TEXT.
+
+Format:
+{
+  "actions": [],
+  "summary": "What you built in 2-3 sentences",
+  "changes": [
+    {"type":"created|edited|deleted", "path":"game.ServerScriptService.ScriptName", "description":"what it does"}
+  ],
+  "details": [
+    {"label":"Spawn Rate","value":"Every 3 seconds"},
+    {"label":"How to adjust","value":"Change SPAWN_INTERVAL at top of BrainrotSpawner"}
+  ]
+}
+
+Available actions:
+{"type":"create_script","scriptType":"Script|LocalScript|ModuleScript","name":"Name","parent":"game.ServerScriptService","source":"-- complete luau"}
+{"type":"edit_script","path":"game.ServerScriptService.ScriptName","source":"-- complete rewritten source"}
+{"type":"create_instance","className":"Part","name":"Name","parent":"game.Workspace","properties":{"Size":[4,1,4],"Anchored":true}}
+{"type":"delete_instance","path":"game.ServerScriptService.ScriptName"}
+{"type":"set_property","path":"game.Workspace.Part","property":"BrickColor","value":"Bright red"}
+
+RULES:
+- Start response with { immediately
+- Write COMPLETE Luau source — never truncated, never placeholder comments
+- Use exact instance paths from game context
+- actions array must contain every actual change
+- changes array summarizes what was done (for the UI)
+- details array shows config values user might want to tweak
+` + gameInfo + (investigationResults.length > 0 ? `\n\nINVESTIGATION RESULTS:\n${investigationResults.map(i=>`${i.action} ${i.target}: ${i.result}`).join('\n')}` : '') },
+        { role: "user", content: `User request: ${userMessage}\n\nPlan:\n${(plan.steps||[]).map((s,i)=>`${i+1}. ${s.title}: ${s.description}`).join('\n')}\n\nNow implement all of this completely.` }
+      ];
+
+      const execRaw = await model.call(executeMessages);
+      let execResult = safeJSON(execRaw);
+
+      // Retry if actions empty but there should be some
+      if (!execResult || (execResult.actions && execResult.actions.length === 0)) {
+        console.log("[agent] retry — no actions in first attempt");
+        const retry = await model.call([
+          ...executeMessages,
+          { role: "assistant", content: execRaw || "" },
+          { role: "user", content: "Your actions array is empty. You MUST populate it with the actual create_script/edit_script/create_instance actions. Return the JSON again with actions filled in." }
+        ]);
+        const r2 = safeJSON(retry);
+        if (r2 && r2.actions && r2.actions.length > 0) execResult = r2;
+      }
+
+      if (!execResult) execResult = { actions: [], summary: execRaw, changes: [], details: [] };
+      if (!execResult.actions) execResult.actions = [];
+
+      // Queue actions for studio
+      if (sessionToken && execResult.actions.length > 0) {
+        actionQueues[sessionToken] = { actions: execResult.actions, queuedAt: Date.now() };
+        console.log(`[agent] queued ${execResult.actions.length} actions`);
+      }
+
+      // Push fresh context request after changes
+      // (plugin will push on next interval)
+
+      send(res, 200, {
+        phase: "complete",
+        plan: {
+          summary: plan.summary || "",
+          investigations: investigationResults,
+          steps: plan.steps || []
+        },
+        actions: execResult.actions,
+        summary: execResult.summary || "",
+        changes: execResult.changes || [],
+        details: execResult.details || []
+      });
+
+    } catch(e) {
+      console.error("[agent error]", e.message);
+      send(res, 500, { error: e.message });
+    }
+    return;
+  }
+
+  // POST /agent/option — user picked an option, now execute it
+  if (url === "/agent/option" && req.method === "POST") {
+    try {
+      const body = await getBody(req);
+      // Just forward as a direct agent call with the chosen option as the message
+      body.message = body.option;
+      // Re-route to agent handler by recursion trick — just call generate directly
+      const sessionToken = body.sessionToken;
+      let userPlan = "free";
+      if (sessionToken) {
+        const session = sessions[sessionToken];
+        if (!session) return send(res, 401, { error: "Invalid session" });
+        userPlan = session.plan;
+      }
+      const modelId = body.model || "glm5";
+      const model = MODELS[modelId] || MODELS["glm5"];
+      if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { error: "Pro required" });
+
+      const ctx = gameContexts[sessionToken];
+      const gameInfo = ctx
+        ? `\n\n========== GAME STATE ==========\n${ctx.context}\n========== END ==========`
+        : "\n\n[No game context]";
+
+      const planMessages = [
+        { role: "system", content: `You are Spark. Create an investigation + execution plan for this specific task.
+Respond ONLY with JSON:
+{"summary":"what you're doing","investigations":[{"action":"read_script|list_children|find_instance","target":"path","reason":"why"}],"steps":[{"id":1,"title":"title","description":"what"}]}
+` + gameInfo },
+        { role: "user", content: body.option }
+      ];
+      const planRaw = await model.call(planMessages);
+      const plan = safeJSON(planRaw) || { summary: body.option, investigations: [], steps: [{ id:1, title: "Implement", description: body.option }] };
+
+      const investigationResults = [];
+      if (plan.investigations && ctx) {
+        for (const inv of plan.investigations) {
+          let result = "";
+          if (inv.action === "read_script") {
+            const scriptName = inv.target.split(".").pop();
+            const scriptMatch = ctx.context.match(new RegExp(`--- PATH: [^\\n]*${scriptName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}[^\\n]* ---\\n([\\s\\S]*?)(?=\\n--- PATH:|\\n=== |$)`,'i'));
+            result = scriptMatch ? `Source:\n${scriptMatch[1].slice(0,3000)}` : `Not found`;
+          } else if (inv.action === "list_children") {
+            const svcName = inv.target.split(".").pop();
+            const svcMatch = ctx.context.match(new RegExp(`=== ${svcName} ===([\\s\\S]*?)(?=\\n===|$)`,'i'));
+            result = svcMatch ? svcMatch[1].slice(0,1000) : "Not found";
+          } else if (inv.action === "find_instance") {
+            result = ctx && ctx.context.includes(inv.target) ? `Found: ${inv.target}` : `Not found: ${inv.target}`;
+          }
+          investigationResults.push({ ...inv, result });
+        }
+      }
+
+      const executeMessages = [
+        { role: "system", content: `You are Spark. Implement now. Respond ONLY with JSON starting with {:
+{"actions":[],"summary":"what you built","changes":[{"type":"created|edited|deleted","path":"...","description":"..."}],"details":[{"label":"...","value":"..."}]}
+
+Actions: create_script, edit_script, create_instance, delete_instance, set_property
+Write COMPLETE Luau. No truncation. Start with {.
+` + gameInfo + (investigationResults.length > 0 ? `\n\nINVESTIGATION:\n${investigationResults.map(i=>`${i.action} ${i.target}: ${i.result}`).join('\n')}` : '') },
+        { role: "user", content: `Task: ${body.option}\n\nSteps:\n${plan.steps.map((s,i)=>`${i+1}. ${s.title}: ${s.description}`).join('\n')}\n\nImplement everything now.` }
+      ];
+
+      const execRaw = await model.call(executeMessages);
+      let execResult = safeJSON(execRaw) || { actions: [], summary: execRaw, changes: [], details: [] };
+      if (!execResult.actions) execResult.actions = [];
+
+      if (sessionToken && execResult.actions.length > 0) {
+        actionQueues[sessionToken] = { actions: execResult.actions, queuedAt: Date.now() };
+      }
+
+      send(res, 200, {
+        phase: "complete",
+        plan: { summary: plan.summary, investigations: investigationResults, steps: plan.steps },
+        actions: execResult.actions,
+        summary: execResult.summary || "",
+        changes: execResult.changes || [],
+        details: execResult.details || []
+      });
+    } catch(e) {
+      send(res, 500, { error: e.message });
+    }
+    return;
+  }
+
   // ── 404 ──
   send(res, 404, { error: "Not found" });
 });

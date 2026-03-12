@@ -145,6 +145,31 @@ async function callOpenRouter(model, messages) {
   });
 }
 
+
+// ── SANITIZE SCRIPT SOURCE ────────────────────────────────────────────────────
+// Fixes common AI codegen mistakes before sending to Studio
+function sanitizeSource(src) {
+  if (!src || typeof src !== 'string') return src;
+  src = src.replace(/\bprint\(("(?:[^"\\]|\\.)*")\)\)/g, 'print($1)');
+  src = src.replace(/\bwarn\(("(?:[^"\\]|\\.)*")\)\)/g, 'warn($1)');
+  src = src.replace(/\berror\(("(?:[^"\\]|\\.)*")\)\)/g, 'error($1)');
+  src = src.replace(/\bprint\(('(?:[^'\\]|\\.)*')\)\)/g, 'print($1)');
+  src = src.replace(/\bwarn\(('(?:[^'\\]|\\.)*')\)\)/g, 'warn($1)');
+  src = src.replace(/\berror\(('(?:[^'\\]|\\.)*')\)\)/g, 'error($1)');
+  src = src.replace(/\)\)\)/g, '))');
+  src = src.split('\n').map(function(l){return l.replace(/\s+$/,'');}).join('\n').trimEnd();
+  return src;
+}
+function sanitizeActions(actions) {
+  if (!Array.isArray(actions)) return actions;
+  return actions.map(a => {
+    if ((a.type === 'create_script' || a.type === 'edit_script') && a.source) {
+      a.source = sanitizeSource(a.source);
+    }
+    return a;
+  });
+}
+
 // ── MODEL REGISTRY ────────────────────────────────────────────────────────────
 const MODELS = {
   "glm5":     { tier:"free", call: m => callOllama("glm-5:cloud", m) },
@@ -355,7 +380,7 @@ const server = http.createServer(async (req, res) => {
 
       // Queue actions for studio
       if (sessionToken && parsed.actions.length > 0) {
-        actionQueues[sessionToken] = { actions: parsed.actions, queuedAt: Date.now() };
+        actionQueues[sessionToken] = { actions: sanitizeActions(parsed.actions), queuedAt: Date.now() };
         console.log('[generate] queued ' + parsed.actions.length + ' actions');
       }
 
@@ -470,7 +495,7 @@ Create ALL necessary scripts and instances. Write complete working Luau code.` }
       let result = safeJSON(raw);
       if (!result) result = { reply: raw, actions: [] };
       if (sessionToken && result.actions?.length > 0) {
-        actionQueues[sessionToken] = { actions: result.actions, queuedAt: Date.now() };
+        actionQueues[sessionToken] = { actions: sanitizeActions(result.actions), queuedAt: Date.now() };
       }
       send(res, 200, result);
     } catch(e) { send(res, 500, { reply: "Error: " + e.message, actions: [] }); }
@@ -663,6 +688,10 @@ Available actions:
 
 RULES:
 - Start response with { immediately
+- CRITICAL Luau rule: never write print("msg")) with double closing paren — always print("msg") with ONE closing paren
+- CRITICAL Luau rule: every function call has exactly matching open/close parentheses
+- CRITICAL Luau rule: every 'if', 'for', 'while', 'function' block must end with 'end'
+- Write clean Luau, not Python — no colons after if/for, use 'then'/'do' keywords
 - Write COMPLETE Luau source — never truncated, never placeholder comments
 - Use exact instance paths from game context
 - actions array must contain every actual change
@@ -692,7 +721,7 @@ RULES:
 
       // Queue actions for studio
       if (sessionToken && execResult.actions.length > 0) {
-        actionQueues[sessionToken] = { actions: execResult.actions, queuedAt: Date.now() };
+        actionQueues[sessionToken] = { actions: sanitizeActions(execResult.actions), queuedAt: Date.now() };
         console.log(`[agent] queued ${execResult.actions.length} actions`);
       }
 
@@ -786,7 +815,7 @@ Write COMPLETE Luau. No truncation. Start with {.
       if (!execResult.actions) execResult.actions = [];
 
       if (sessionToken && execResult.actions.length > 0) {
-        actionQueues[sessionToken] = { actions: execResult.actions, queuedAt: Date.now() };
+        actionQueues[sessionToken] = { actions: sanitizeActions(execResult.actions), queuedAt: Date.now() };
       }
 
       send(res, 200, {

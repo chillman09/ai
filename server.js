@@ -163,6 +163,13 @@ function sanitizeSource(src) {
 function sanitizeActions(actions) {
   if (!Array.isArray(actions)) return actions;
   return actions.map(a => {
+    // Normalize field names — AI sometimes uses wrong keys
+    if (a.action && !a.type) a.type = a.action;           // "action" -> "type"
+    if (a.script && !a.source) a.source = a.script;       // "script" -> "source"
+    if (a.scriptName && !a.name) a.name = a.scriptName;   // "scriptName" -> "name"
+    if (a.scriptParent && !a.parent) a.parent = a.scriptParent;
+    if (a.scriptType === undefined && a.type === 'create_script') a.scriptType = 'Script';
+    // Sanitize source
     if ((a.type === 'create_script' || a.type === 'edit_script') && a.source) {
       a.source = sanitizeSource(a.source);
     }

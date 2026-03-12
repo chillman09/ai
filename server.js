@@ -280,7 +280,6 @@ async function callGitHub(modelName, messages) {
 // ── MODEL REGISTRY ────────────────────────────────────────────────────────────
 const MODELS = {
   // GitHub Models — free with your GitHub token
-  "gpt5":         { tier:"free", label:"GPT-5",            call: m => callGitHub("gpt-5", m) },
   "gpt4o":        { tier:"free", label:"GPT-4o",           call: m => callGitHub("gpt-4o", m) },
   "gpt4o-mini":   { tier:"free", label:"GPT-4o Mini",      call: m => callGitHub("gpt-4o-mini", m) },
   "llama405b":    { tier:"free", label:"Llama 3.1 405B",   call: m => callGitHub("Meta-Llama-3.1-405B-Instruct", m) },
@@ -477,7 +476,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 401, { reply: "❌ Invalid plugin token.", actions: [] });
       }
 
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, {
@@ -521,7 +520,7 @@ const server = http.createServer(async (req, res) => {
         userPlan = session.plan;
       }
 
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, { analysis: "🔒 Pro required for this model." });
@@ -556,7 +555,7 @@ const server = http.createServer(async (req, res) => {
         if (!s) return send(res, 401, { error: "Invalid session" });
         userPlan = s.plan;
       }
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { error: "Pro required" });
 
@@ -590,7 +589,7 @@ const server = http.createServer(async (req, res) => {
         if (!s) return send(res, 401, { error: "Invalid session" });
         userPlan = s.plan;
       }
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { reply: "Pro required", actions: [] });
 
@@ -683,7 +682,7 @@ Create ALL necessary scripts and instances. Write complete working Luau code.` }
         userPlan = session.plan;
       }
 
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, { error: "Pro required for this model" });
@@ -879,7 +878,7 @@ RULES:
         if (!session) return send(res, 401, { error: "Invalid session" });
         userPlan = session.plan;
       }
-      const modelId = body.model || "gpt5";
+      const modelId = body.model || "gpt4o";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { error: "Pro required" });
 

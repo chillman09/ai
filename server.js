@@ -170,14 +170,109 @@ function sanitizeActions(actions) {
   });
 }
 
+// ── GEMINI FREE API ───────────────────────────────────────────────────────────
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
+
+async function callGemini(modelName, messages) {
+  if (!GEMINI_KEY) throw new Error("GEMINI_API_KEY not set — add it in Railway environment variables");
+  return new Promise((resolve, reject) => {
+    // Convert OpenAI-style messages to Gemini format
+    const systemMsg = messages.find(m => m.role === "system");
+    const userMsgs = messages.filter(m => m.role !== "system");
+
+    const contents = userMsgs.map(m => {
+      const parts = [];
+      if (typeof m.content === "string") {
+        parts.push({ text: m.content });
+      } else if (Array.isArray(m.content)) {
+        // Handle multimodal (text + images)
+        for (const c of m.content) {
+          if (c.type === "text") parts.push({ text: c.text });
+          else if (c.type === "image_url" && c.image_url) {
+            const dataUrl = c.image_url.url || "";
+            const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+          }
+        }
+      }
+      return { role: m.role === "assistant" ? "model" : "user", parts };
+    });
+
+    const payload = JSON.stringify({
+      system_instruction: systemMsg ? { parts: [{ text: systemMsg.content }] } : undefined,
+      contents,
+      generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+    });
+
+    const path = `/v1beta/models/${modelName}:generateContent?key=${GEMINI_KEY}`;
+    const req = https.request({
+      hostname: "generativelanguage.googleapis.com",
+      path, method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+    }, res => {
+      let raw = "";
+      res.on("data", c => raw += c);
+      res.on("end", () => {
+        try {
+          const p = JSON.parse(raw);
+          const t = p.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (t) resolve(t);
+          else reject(new Error(p.error?.message || "No content from Gemini: " + raw.slice(0,120)));
+        } catch(e) { reject(new Error("Gemini parse error: " + raw.slice(0,80))); }
+      });
+    });
+    req.on("error", reject); req.write(payload); req.end();
+  });
+}
+
+// ── GITHUB MODELS (free via Azure AI) ────────────────────────────────────────
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
+async function callGitHub(modelName, messages) {
+  if (!GITHUB_TOKEN) throw new Error("GITHUB_TOKEN not set in Railway env vars");
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ model: modelName, messages, stream: false, max_tokens: 4096 });
+    const req = https.request({
+      hostname: "models.inference.ai.azure.com",
+      path: "/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + GITHUB_TOKEN,
+        "Content-Length": Buffer.byteLength(payload)
+      }
+    }, res => {
+      let raw = "";
+      res.on("data", c => raw += c);
+      res.on("end", () => {
+        try {
+          const p = JSON.parse(raw);
+          const t = p.choices?.[0]?.message?.content;
+          if (t) resolve(t);
+          else reject(new Error(p.error?.message || "No content from GitHub Models: " + raw.slice(0,120)));
+        } catch(e) { reject(new Error("GitHub Models parse error: " + raw.slice(0,80))); }
+      });
+    });
+    req.on("error", reject); req.write(payload); req.end();
+  });
+}
+
 // ── MODEL REGISTRY ────────────────────────────────────────────────────────────
 const MODELS = {
-  "glm5":     { tier:"free", call: m => callOllama("glm-5:cloud", m) },
-  "llama31":  { tier:"free", call: m => callOllama("llama3.1:8b", m) },
-  "gpt4o":    { tier:"paid", call: m => callOpenRouter("openai/gpt-4o", m) },
-  "claude35": { tier:"paid", call: m => callOpenRouter("anthropic/claude-3.5-sonnet", m) },
-  "grok3":    { tier:"paid", call: m => callOpenRouter("x-ai/grok-3-mini-beta", m) },
-  "gemini25": { tier:"paid", call: m => callOpenRouter("google/gemini-2.5-pro-preview", m) },
+  // GitHub Models — free with your GitHub token
+  "gpt5":         { tier:"free", label:"GPT-5",            call: m => callGitHub("gpt-5", m) },
+  "gpt4o":        { tier:"free", label:"GPT-4o",           call: m => callGitHub("gpt-4o", m) },
+  "gpt4o-mini":   { tier:"free", label:"GPT-4o Mini",      call: m => callGitHub("gpt-4o-mini", m) },
+  "llama405b":    { tier:"free", label:"Llama 3.1 405B",   call: m => callGitHub("Meta-Llama-3.1-405B-Instruct", m) },
+  "mistral":      { tier:"free", label:"Mistral Large",    call: m => callGitHub("Mistral-large-2407", m) },
+  // Gemini free API
+  "gemini-flash": { tier:"free", label:"Gemini 2.0 Flash", call: m => callGemini("gemini-2.0-flash", m) },
+  // Ollama fallbacks
+  "glm5":         { tier:"free", label:"GLM-5",            call: m => callOllama("glm-5:cloud", m) },
+  // Paid via OpenRouter
+  "claude35":     { tier:"paid", label:"Claude 3.5",       call: m => callOpenRouter("anthropic/claude-3.5-sonnet", m) },
+  "grok3":        { tier:"paid", label:"Grok 3",           call: m => callOpenRouter("x-ai/grok-3-mini-beta", m) },
+  "gemini25pro":  { tier:"paid", label:"Gemini 2.5 Pro",   call: m => callOpenRouter("google/gemini-2.5-pro-preview", m) },
 };
 
 // ── SYSTEM PROMPTS ────────────────────────────────────────────────────────────
@@ -362,7 +457,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 401, { reply: "❌ Invalid plugin token.", actions: [] });
       }
 
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, {
@@ -406,7 +501,7 @@ const server = http.createServer(async (req, res) => {
         userPlan = session.plan;
       }
 
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, { analysis: "🔒 Pro required for this model." });
@@ -441,7 +536,7 @@ const server = http.createServer(async (req, res) => {
         if (!s) return send(res, 401, { error: "Invalid session" });
         userPlan = s.plan;
       }
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { error: "Pro required" });
 
@@ -475,7 +570,7 @@ const server = http.createServer(async (req, res) => {
         if (!s) return send(res, 401, { error: "Invalid session" });
         userPlan = s.plan;
       }
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { reply: "Pro required", actions: [] });
 
@@ -568,13 +663,15 @@ Create ALL necessary scripts and instances. Write complete working Luau code.` }
         userPlan = session.plan;
       }
 
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") {
         return send(res, 403, { error: "Pro required for this model" });
       }
 
       const userMessage = body.message || "";
+      // Support multimodal content (text + image)
+      const userContent = body.content || userMessage;
       const ctx = gameContexts[sessionToken];
       const gameInfo = ctx
         ? `\n\n========== GAME STATE (${Math.round((Date.now()-ctx.updatedAt)/1000)}s ago) ==========\n${ctx.context}\n========== END ==========`
@@ -594,7 +691,7 @@ If the request is CLEAR (one obvious thing to do, or user already specified exac
 Examples of AMBIGUOUS: "make a battle royale", "fix all bugs", "add multiplayer", "improve my game"
 Examples of DIRECT: "add a leaderboard", "fix the killbrick debounce bug", "create a checkpoint system", "delete the TestScript"
 ` + gameInfo },
-        { role: "user", content: userMessage }
+        { role: "user", content: userContent }
       ];
 
       const classifyRaw = await model.call(classifyMessages);
@@ -762,7 +859,7 @@ RULES:
         if (!session) return send(res, 401, { error: "Invalid session" });
         userPlan = session.plan;
       }
-      const modelId = body.model || "glm5";
+      const modelId = body.model || "gpt5";
       const model = MODELS[modelId] || MODELS["glm5"];
       if (model.tier === "paid" && userPlan !== "pro") return send(res, 403, { error: "Pro required" });
 

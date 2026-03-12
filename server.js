@@ -228,10 +228,30 @@ async function callGemini(modelName, messages) {
 // ── GITHUB MODELS (free via Azure AI) ────────────────────────────────────────
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
+// GitHub Models token limits (free tier)
+const GITHUB_MODEL_LIMITS = {
+  "gpt-5": 3000,       // ~3000 chars per message to stay safe
+  "gpt-4o": 10000,
+  "gpt-4o-mini": 10000,
+};
+
+function trimMessagesForGitHub(modelName, messages) {
+  const charLimit = (GITHUB_MODEL_LIMITS[modelName] || 8000) * 3; // chars ≈ tokens * 3
+  return messages.map(m => {
+    if (typeof m.content !== 'string') return m;
+    if (m.content.length <= charLimit) return m;
+    // Keep the start (instructions) and trim the game context in the middle
+    const keep = Math.floor(charLimit * 0.9);
+    const trimmed = m.content.slice(0, keep) + '\n\n[... game context trimmed to fit model limit ...]';
+    return { ...m, content: trimmed };
+  });
+}
+
 async function callGitHub(modelName, messages) {
   if (!GITHUB_TOKEN) throw new Error("GITHUB_TOKEN not set in Railway env vars");
+  const trimmed = trimMessagesForGitHub(modelName, messages);
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ model: modelName, messages, stream: false, max_tokens: 4096 });
+    const payload = JSON.stringify({ model: modelName, messages: trimmed, stream: false, max_tokens: 1024 });
     const req = https.request({
       hostname: "models.inference.ai.azure.com",
       path: "/chat/completions",
